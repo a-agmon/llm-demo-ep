@@ -61,8 +61,8 @@ async fn prepare_query(query: String) -> anyhow::Result<Vec<(String, String)>> {
     let prompt_embedding_norm = vectors::VectorsOps::normalize(&prompt_embedding);
     // search relevant tables
     let vecdb = VecDB::create_or_open(
-        "/home/alonagmon/rust/schema-pilot/runtime_assets/vecdb",
-        "hc100",
+        "runtime_assets/vecdb",
+        "retail-vec",
         Some(384),
     )
     .await?;

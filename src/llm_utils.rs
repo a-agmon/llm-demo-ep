@@ -20,7 +20,7 @@ impl LLMRequest {
         let response = client
             .post(self.api_url.clone())
             .header("Content-Type", "application/json")
-            .header("api-key", self.api_key.clone())
+            .header("Authorization", format!("Bearer {}", self.api_key.clone()))
             .body(json_request.to_string())
             .send()
             .await?;
