@@ -105,8 +105,8 @@ pub struct TableContent {
 }
 
 fn embed_and_normalize_query(query: String) -> anyhow::Result<Vec<f32>> {
-    let embedding_model = embedder::get_model_reference().unwrap();
-    let prompt_embedding = embedding_model.embed_multiple(vec![query.clone()]).unwrap();
+    let embedding_model = embedder::get_model_reference()?;
+    let prompt_embedding = embedding_model.embed_multiple(vec![query.clone()])?;
     let prompt_embedding = prompt_embedding[0].clone();
     let prompt_embedding_norm = vectors::VectorsOps::normalize(&prompt_embedding);
     Ok(prompt_embedding_norm)
