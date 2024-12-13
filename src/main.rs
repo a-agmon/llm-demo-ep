@@ -1,8 +1,17 @@
-use axum::{response::IntoResponse, routing::post, Json, Router};
+use std::sync::Arc;
+
+use axum::{
+    extract::rejection::LengthLimitError,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use llm_utils::LLMRequest;
+use once_cell::sync::{Lazy, OnceCell};
 use serde::Deserialize;
+use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::info;
+use tracing::{info, Level};
 use vecdb::VecDB;
 mod embedder;
 mod llm_utils;
@@ -10,12 +19,19 @@ mod vecdb;
 mod vectors;
 
 use axum::http::StatusCode;
-
+static VECDB: OnceCell<Arc<RwLock<VecDB>>> = OnceCell::new();
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // initialize tracing
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
     info!("Starting server...");
+    let vecdb = init_vecdb(
+        "/home/alonagmon/rust/schema-pilot/runtime_assets/vecdb/",
+        "retail_dm",
+    )
+    .await?;
+    if let Err(_) = VECDB.set(vecdb) {
+        info!("vec db value was set");
+    }
 
     // Add CORS middleware
     let cors = CorsLayer::new()
@@ -25,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/generate", post(generate_response))
+        .route("/test", get(test_service))
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
@@ -33,47 +50,88 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[axum::debug_handler]
-async fn generate_response(body: String) -> impl IntoResponse {
-    //let messages = vec![("user".to_string(), body)];
-    let messages = prepare_query(body).await.unwrap();
-    let response = generate_response_llm(messages).await;
-    (StatusCode::OK, response)
+fn get_vecdb() -> &'static Arc<RwLock<VecDB>> {
+    VECDB.get().expect("failed to get vecdb state")
 }
 
-async fn query_llm(body_str: String) -> (StatusCode, String) {
-    // let body = request.into_body();
-    // let bytes = axum::body::to_bytes(body, 2048usize).await.unwrap();
-    // let body_str = String::from_utf8(bytes.to_vec()).unwrap();
-    let messages = prepare_query(body_str).await.unwrap();
-    let response = generate_response_llm(messages).await;
-    (axum::http::StatusCode::OK, response)
+async fn init_vecdb(path: &str, table_name: &str) -> anyhow::Result<Arc<RwLock<VecDB>>> {
+    info!("initializing vecdb on path: {path} with name: {table_name}");
+    let vec_db = VecDB::create_or_open(path, table_name, Some(384)).await?;
+    let vec_db = Arc::new(RwLock::new(vec_db));
+    Ok(vec_db)
+}
+
+async fn test_service() -> impl IntoResponse {
+    let vecdb = get_vecdb();
+    let vecdb = vecdb.read().await;
+    let embedding_model = embedder::get_model_reference().unwrap();
+    let prompt_embedding = embedding_model
+        .embed_multiple(vec!["hello".to_string()])
+        .unwrap();
+    let prompt_embedding = prompt_embedding[0].clone();
+    let prompt_embedding_norm = vectors::VectorsOps::normalize(&prompt_embedding);
+    let tables = vecdb.find_similar_x(prompt_embedding_norm, 10).await;
+    match tables {
+        Ok(_) => (StatusCode::OK, String::from("all good!")),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+#[axum::debug_handler]
+async fn generate_response(body: String) -> impl IntoResponse {
+    info!("recieved query: {body}");
+    let response = process_query(body).await;
+    match response {
+        Ok(response) => (StatusCode::OK, response),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn process_query(query: String) -> anyhow::Result<String> {
+    let embedding = embed_and_normalize_query(query.clone())?;
+    tracing::info!("embedding generated");
+    let context_tables = get_relevant_context_tables(embedding, 20).await?;
+    tracing::info!("context tables generated");
+    let prompt_msgs = generate_prompt_msgs(query, context_tables).await?;
+    tracing::info!("prompt messages generated");
+    let response = generate_response_llm(prompt_msgs).await;
+    tracing::info!("response generated");
+    Ok(response)
 }
 
 #[derive(Debug, serde::Deserialize)]
 pub struct TableContent {
     pub content: String,
 }
-async fn prepare_query(query: String) -> anyhow::Result<Vec<(String, String)>> {
+
+fn embed_and_normalize_query(query: String) -> anyhow::Result<Vec<f32>> {
     let embedding_model = embedder::get_model_reference().unwrap();
     let prompt_embedding = embedding_model.embed_multiple(vec![query.clone()]).unwrap();
     let prompt_embedding = prompt_embedding[0].clone();
     let prompt_embedding_norm = vectors::VectorsOps::normalize(&prompt_embedding);
-    // search relevant tables
-    let vecdb = VecDB::create_or_open(
-        "runtime_assets/vecdb",
-        "retail-vec",
-        Some(384),
-    )
-    .await?;
-    let tables = vecdb.find_similar_x(prompt_embedding_norm, 10).await?;
+    Ok(prompt_embedding_norm)
+}
+
+async fn get_relevant_context_tables(
+    query_vec: Vec<f32>,
+    num_tables: usize,
+) -> anyhow::Result<Vec<TableContent>> {
+    let vecdb = get_vecdb();
+    let vecdb = vecdb.read().await;
+    let tables = vecdb.find_similar_x(query_vec, num_tables).await?;
     let table_contents: Vec<TableContent> = serde_arrow::from_record_batch(&tables)?;
-    let context_str = table_contents
+    Ok(table_contents)
+}
+
+async fn generate_prompt_msgs(
+    query: String,
+    context_tables: Vec<TableContent>,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let context_str = context_tables
         .iter()
         .map(|t| t.content.clone())
         .collect::<Vec<String>>()
         .join("\n");
-
     let prompt = create_prompt(context_str, query);
     Ok(prompt)
 }
@@ -95,8 +153,9 @@ async fn generate_response_llm(messages: Vec<(String, String)>) -> String {
 fn create_prompt(context: String, query: String) -> Vec<(String, String)> {
     let sys = r#" 
     You are an AI assistant that answers questions about database schemas and tables. 
-    Your answer always includes information about the relevant tables, columns and their purpose. 
-    You can also add a query to the answer if the user asked for a query.
+    Your answer always includes information about the relevant tables and their purpose. 
+    When you add a query to your answer, always mark it with ```sql.
+    Always use numbers when enumerating items.
     "#
     .to_string();
 
@@ -105,7 +164,7 @@ fn create_prompt(context: String, query: String) -> Vec<(String, String)> {
         Here are the tables in our database:
         {context}
 
-        Based on the tables in our database given above, please answer the following question concisely and directly:
+        Based on the tables in our database given above, please answer the following question:
         {query}
         "#
     );

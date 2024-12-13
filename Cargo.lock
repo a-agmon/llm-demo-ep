@@ -3567,6 +3567,7 @@ dependencies = [
  "futures",
  "hf-hub",
  "lancedb",
+ "once_cell",
  "reqwest 0.12.9",
  "serde",
  "serde_arrow",

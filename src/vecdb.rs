@@ -67,8 +67,9 @@ impl VecDB {
             .try_collect::<Vec<_>>()
             .await?;
 
-        println!("Got {} batches of results", query_results.len());
-        let first = query_results.first().unwrap();
+        let first = query_results
+            .first()
+            .ok_or(anyhow::anyhow!("error getting first result"))?;
         Ok(first.clone())
     }
 

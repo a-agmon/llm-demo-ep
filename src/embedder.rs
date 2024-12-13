@@ -15,7 +15,7 @@ const EMB_MODEL_REV: &str = "main";
 
 thread_local! {
     static BERT_MODEL: Arc<EmbeddingModel> =   {
-        println!("Loading a model on thread: {:?}", std::thread::current().id());
+        tracing::info!("Loading a embedding model on thread: {:?}", std::thread::current().id());
         let model = EmbeddingModel::new(EMB_MODEL_ID.to_string(), EMB_MODEL_REV.to_string());
         match model {
             Ok(model) => Arc::new(model),
