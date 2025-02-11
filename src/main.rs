@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
     info!("Starting server...");
     let vecdb = init_vecdb(
-        "/home/alonagmon/rust/schema-pilot/runtime_assets/vecdb/",
+        "/Users/alonagmon/Library/CloudStorage/OneDrive-Microsoft/vec-db/vecdb",
         "retail_dm",
     )
     .await?;
@@ -165,6 +165,27 @@ fn create_prompt(context: String, query: String) -> Vec<(String, String)> {
         {context}
 
         Based on the tables in our database given above, please answer the following question:
+        {query}
+        "#
+    );
+    vec![(String::from("system"), sys), (String::from("user"), user)]
+}
+
+fn create_new_schema_prompt(context: String, query: String) -> Vec<(String, String)> {
+    let sys = r#" 
+    You are an AI assistant that assists with creating schemas for a database.
+    You have a list of tables and their purpose as context, and you need to help the user find the schema that fits their needs.
+    Your answer provides the names of the main tables you reccomend to use (usually 2 - 3), and the purpose of each table.
+    You also provide a short description of the relationship between the table, and a shortened list of the tables that will be created.
+    "#
+    .to_string();
+
+    let user = format!(
+        r#"
+        ## Here are the tables that you can use to answer the question: ##
+        {context}
+
+        ## Based on the tables in our database given above, please provide a reasoned reccomentation for the user's request: ##
         {query}
         "#
     );
